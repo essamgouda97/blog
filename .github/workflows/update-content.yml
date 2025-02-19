@@ -1,0 +1,25 @@
+name: Update Content
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  update-content:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Git
+        run: |
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+
+      - name: Update content
+        run: |
+          git add .
+          git commit -m "Update content for release ${GITHUB_REF#refs/tags/}" || echo "No changes to commit"
+          git push
+
