@@ -11,6 +11,7 @@ Since *vibe coding* is now a well-established term, I decided to try it on anoth
 I started with the [ModelNet10 dataset](https://www.kaggle.com/datasets/balraj98/modelnet10-princeton-3d-object-dataset/data) and implemented [PointNet](https://arxiv.org/abs/1612.00593), a straightforward neural network that accepts unstructured point data and is suitable for classification and segmentation tasks. However, what I really wanted was **"3D models → embeddings"** (fancy term for *a list of numbers that helps computers represent stuff*). These embeddings are stored in PointNet’s global feature layer (marked green).  
 
 ![PointNet Architecture](/content/3d-data/static/arch.png)  
+*Figure 1: PointNet architecture, with the global feature layer (green) storing embeddings.*
 
 ## Data
 
@@ -20,14 +21,16 @@ First off, the data comes in `.off` files, a format that represents faces and ve
 - **Mesh:** A structured shape, e.g., a **Triangular Mesh** (a face that looks like a triangle). Below is a **visual representation** of a bathtub read from a `.off` file:  
 
   ![Bathtub Mesh Visualization](/content/3d-data/static/bathtub_mesh.png)  
+  *Figure 2: Bathtub mesh representation, showing the structure of the 3D model.*
 
 - Once we have the meshes, we need to **sample** them. Since I’m using PointNet, I sample the mesh into **points!**  
 
   ![Point Cloud Visualization](/content/3d-data/static/bathtub_points.png)  
+  *Figure 3: Point cloud representation of the bathtub model, used as input for PointNet.*
 
 ## Self-Supervised Training with NT-Xent Loss  
 
-In the real world, **data is unlabeled** cuz humans are messy. To try and mimic the real world I picked NT-Xent Loss that which is usually used in a self-supervised way.
+In the real world, **data is unlabeled** cuz humans are messy. To try and mimic the real world I picked NT-Xent Loss that is usually used in a self-supervised way.
 
 ### What is NT-Xent Loss?  
 
@@ -84,11 +87,13 @@ If the dataset were **unlabeled**, I would have needed to:
 
 ### Loss Curve  
 
-Although the **training and test loss have been decreasing**, meaning the model is **learning**, the embeddings do not yet form **distinct clusters**. Ideally, classes should be well-separated, but the visualizations show overlap (or maybe umap is bad at visualizing 3D data?). Anyways good enough for the weekend and a nice intro to 3D data.
+Although the **training and test loss have been decreasing**, meaning the model is **learning**, the embeddings do not yet form **distinct clusters**. Ideally, classes should be well-separated, but the visualizations show overlap. Anyways good enough for the weekend and a nice intro to 3D data.
 
-![Loss Curve](/content/3d-data/static/loss.png)
+![Loss Curve](/content/3d-data/static/loss.png)  
+*Figure 4: Training and test loss curves, showing model convergence.*
 
-![UMAP Visualization at Epoch 100](/content/3d-data/static/umap.png)
+![UMAP Visualization at Epoch 100](/content/3d-data/static/umap.png)  
+*Figure 5: UMAP visualization of learned embeddings at epoch 100, showing class overlap.*
 
 ### Possible Reasons
 
