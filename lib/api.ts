@@ -1,8 +1,6 @@
 import fs from "fs"
 import path from "path"
 import matter from "gray-matter"
-import { remark } from "remark"
-import html from "remark-html"
 
 const contentDirectory = path.join(process.cwd(), "content")
 
@@ -11,8 +9,7 @@ export type Post = {
   title: string
   date: string
   excerpt: string
-  content: string
-  contentHtml?: string
+  content: string  // Changed back to string
   coverImage?: string
 }
 
@@ -20,31 +17,7 @@ export async function getPostBySlug(slug: string): Promise<Post> {
   const fullPath = path.join(contentDirectory, slug, "index.md")
   const fileContents = fs.readFileSync(fullPath, "utf8")
   const { data, content } = matter(fileContents)
-  
-  // Convert markdown to HTML with custom image handling
-  const processedContent = await remark()
-    .use(() => (tree) => {
-      // Find all images in the markdown
-      const images = tree.children.filter(node => 
-        node.type === 'paragraph' && 
-        node.children?.[0]?.type === 'image'
-      )
-      
-      // Remove standalone images from their original position
-      tree.children = tree.children.filter(node => 
-        !(node.type === 'paragraph' && 
-          node.children?.length === 1 && 
-          node.children[0].type === 'image')
-      )
-      
-      // Add images back at the end of the content
-      tree.children.push(...images)
-    })
-    .use(html)
-    .process(content)
-    
-  const contentHtml = processedContent.toString()
-  
+
   // Check if there's a cover image in the static folder
   const staticDir = path.join(contentDirectory, slug, "static")
   let coverImage: string | undefined
@@ -65,8 +38,7 @@ export async function getPostBySlug(slug: string): Promise<Post> {
     title: data.title,
     date: data.date,
     excerpt: data.excerpt || "",
-    content,
-    contentHtml,
+    content,  // Return raw content
     coverImage,
   }
 }

@@ -6,7 +6,7 @@ export function Header() {
     <header className="border-b">
       <div className="container mx-auto px-4 py-4 flex justify-between items-center">
         <Link href="/" className="text-2xl font-bold" style={{ color: "hsl(var(--gouda-yellow))" }}>
-          GoudaDocs
+          :goudadocs
         </Link>
         <ThemeToggle />
       </div>

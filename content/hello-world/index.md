@@ -1,6 +1,6 @@
 ---
 title: 'Hello, World!'
-date: '2023-06-01'
+date: '2025-02-19'
 excerpt: 'Welcome to my first blog post on GoudaDocs.'
 ---
 
