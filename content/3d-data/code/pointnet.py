@@ -14,9 +14,9 @@ import torch.nn as nn
 import pandas as pd
 import torch.multiprocessing as mp
 mp.set_start_method("spawn", force=True)
-
 import plotly.graph_objects as go
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 DATA_DIR = '/app/playground/data/modelnet/data'
@@ -98,11 +98,11 @@ def visualize_embeddings(model, dataloader, device, output_path='embeddings.png'
     
     print("Collecting embeddings...")
     with torch.no_grad():
-        for anchor, pos, neg in tqdm(dataloader):
-            # Get embeddings for anchor points
+        for anchor, pos, neg, batch_labels in tqdm(dataloader):
             anchor = anchor.to(device)
-            z, _, _ = model(anchor)
-            embeddings.append(z.cpu().numpy())
+            # Skip projection computation to save resources
+            _, features, _, _ = model(anchor, compute_projection=False)
+            embeddings.append(features.cpu().numpy())
             # Get the actual class labels for these samples
             batch_size = len(anchor)
             start_idx = len(embeddings) * batch_size
@@ -122,7 +122,7 @@ def visualize_embeddings(model, dataloader, device, output_path='embeddings.png'
     
     # Reduce dimensionality with UMAP
     print("Running UMAP...")
-    reducer = umap.UMAP(random_state=42)
+    reducer = umap.UMAP(n_neighbors=20, min_dist=0.1, metric='cosine', random_state=42)
     embeddings_2d = reducer.fit_transform(embeddings)
     
     # Plot
@@ -144,7 +144,7 @@ def visualize_embeddings(model, dataloader, device, output_path='embeddings.png'
 
 
 ## TRANSFORMATIONS
-# from https://www.kaggle.com/code/balraj98/pointnet-for-3d-object-classification-pytorch/notebook
+# Inspired by https://www.kaggle.com/code/balraj98/pointnet-for-3d-object-classification-pytorch/notebook
 class PointSampler(object):
     def __init__(self, output_size):
         self.output_size = output_size
@@ -173,23 +173,6 @@ class Normalize(object):
         return norm_pointcloud
 
 
-
-class RandRotation_z(object):
-    def __call__(self, pointcloud):
-        if isinstance(pointcloud, tuple):
-            pointcloud = pointcloud[0]
-        assert len(pointcloud.shape)==2
-
-        theta = random.random() * 2. * math.pi
-        rot_matrix = torch.tensor([
-            [ math.cos(theta), -math.sin(theta),    0],
-            [ math.sin(theta),  math.cos(theta),    0],
-            [0,                             0,      1]
-        ], device=pointcloud.device)
-        
-        rot_pointcloud = torch.matmul(pointcloud, rot_matrix.T)
-        return rot_pointcloud
-    
 class RandomNoise(object):
     def __call__(self, pointcloud):
         if isinstance(pointcloud, tuple):
@@ -207,6 +190,48 @@ class ToTensor(object):
 
         return torch.from_numpy(pointcloud)
 
+
+class RandomRotation(object):
+    def __call__(self, pointcloud):
+        if isinstance(pointcloud, tuple):
+            pointcloud = pointcloud[0]
+            
+        # Random rotation around all axes
+        angles = torch.rand(3) * 2 * math.pi
+        Rx = torch.tensor([
+            [1, 0, 0],
+            [0, torch.cos(angles[0]), -torch.sin(angles[0])],
+            [0, torch.sin(angles[0]), torch.cos(angles[0])]
+        ], device=pointcloud.device)
+        
+        Ry = torch.tensor([
+            [torch.cos(angles[1]), 0, torch.sin(angles[1])],
+            [0, 1, 0],
+            [-torch.sin(angles[1]), 0, torch.cos(angles[1])]
+        ], device=pointcloud.device)
+        
+        Rz = torch.tensor([
+            [torch.cos(angles[2]), -torch.sin(angles[2]), 0],
+            [torch.sin(angles[2]), torch.cos(angles[2]), 0],
+            [0, 0, 1]
+        ], device=pointcloud.device)
+        
+        R = torch.matmul(torch.matmul(Rz, Ry), Rx)
+        rotated_pc = torch.matmul(pointcloud, R.T)
+        return rotated_pc
+
+class RandomJitter(object):
+    def __init__(self, scale=0.01, clip=0.05):
+        self.scale = scale
+        self.clip = clip
+        
+    def __call__(self, pointcloud):
+        if isinstance(pointcloud, tuple):
+            pointcloud = pointcloud[0]
+            
+        jitter = torch.clamp(self.scale * torch.randn_like(pointcloud), -self.clip, self.clip)
+        jittered_pc = pointcloud + jitter
+        return jittered_pc
 
 
 class PointCloudDataset(Dataset):
@@ -243,37 +268,47 @@ class PointCloudDataset(Dataset):
             # Get anchor object
             anchor_path = self.paths[idx]
             anchor_class = self.classes[idx]
+            anchor_verts, anchor_faces = read_off(os.path.join(self.data_path, anchor_path))
+            if self.transform is not None:
+                anchor = self.transform((anchor_verts, anchor_faces))
             
             # Sample positive from same class
             pos_indices = self.class_indices[anchor_class]
             pos_indices = pos_indices[pos_indices != idx]  # Remove anchor
             pos_idx = np.random.choice(pos_indices)
             pos_path = self.paths[pos_idx]
-            
-            # Sample negative from different class
-            neg_classes = [c for c in self.class_groups.keys() if c != anchor_class]
-            neg_class = np.random.choice(neg_classes)
-            neg_idx = np.random.choice(self.class_indices[neg_class])
-            neg_path = self.paths[neg_idx]
-            
-            # Load all objects
-            anchor_verts, anchor_faces = read_off(os.path.join(self.data_path, anchor_path))
             pos_verts, pos_faces = read_off(os.path.join(self.data_path, pos_path))
-            neg_verts, neg_faces = read_off(os.path.join(self.data_path, neg_path))
-            
             if self.transform is not None:
-                anchor = self.transform((anchor_verts, anchor_faces))
                 positive = self.transform((pos_verts, pos_faces))
-                negative = self.transform((neg_verts, neg_faces))
             
-            return anchor, positive, negative
+            # Sample multiple negatives from different classes
+            num_negatives = 3  # Sample from 3 different negative classes
+            neg_samples = []
+            
+            neg_classes = [c for c in self.class_groups.keys() if c != anchor_class]
+            sampled_neg_classes = np.random.choice(neg_classes, min(num_negatives, len(neg_classes)), replace=False)
+            
+            for neg_class in sampled_neg_classes:
+                neg_idx = np.random.choice(self.class_indices[neg_class])
+                neg_path = self.paths[neg_idx]
+                neg_verts, neg_faces = read_off(os.path.join(self.data_path, neg_path))
+                if self.transform is not None:
+                    negative = self.transform((neg_verts, neg_faces))
+                neg_samples.append(negative)
+            
+            # If we need to pad to reach num_negatives
+            while len(neg_samples) < num_negatives:
+                neg_samples.append(negative)  # Just duplicate the last one
+            
+            # Return multiple negatives
+            return anchor, positive, neg_samples, anchor_class
         except Exception as e:
             print(f"Error loading item {idx}: {str(e)}")
             raise
 
 
 class NTXentLoss(torch.nn.Module):
-    def __init__(self, temperature=0.5):
+    def __init__(self, temperature=0.2):
         super(NTXentLoss, self).__init__()
         self.temperature = temperature
         self.cosine_similarity = torch.nn.CosineSimilarity(dim=-1)
@@ -294,6 +329,11 @@ class NTXentLoss(torch.nn.Module):
         pos_sim = self.cosine_similarity(z_a, z_p) / self.temperature
         neg_sim = self.cosine_similarity(z_a, z_n) / self.temperature
 
+        # Hard negative mining - focus on the most confusing negatives
+        # by adding a margin to push negatives further away
+        margin = 0.3
+        neg_sim = torch.clamp(neg_sim, max=1.0-margin)
+        
         # Compute NT-Xent loss
         numerator = torch.exp(pos_sim)
         denominator = numerator + torch.exp(neg_sim)
@@ -344,7 +384,7 @@ class TNet(nn.Module):
 
 
 class PointNet(nn.Module):
-    def __init__(self):
+    def __init__(self, embedding_dim=128):
         super(PointNet, self).__init__()
         self.tnet = TNet(k=3)
         self.conv1 = nn.Conv1d(3, 64, 1)
@@ -358,8 +398,16 @@ class PointNet(nn.Module):
 
         self.maxpool = nn.AdaptiveMaxPool1d(1)  # Always reduces to (B, 1024, 1)
         self.relu = nn.ReLU()
-
-    def forward(self, x):
+        
+        # Add projection MLP for contrastive learning
+        self.projection = nn.Sequential(
+            nn.Linear(1024, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Linear(512, embedding_dim)
+        )
+        
+    def forward(self, x, compute_projection=True):
         if x.shape[1:] != (3, 1024):
           x = x.permute(0, 2, 1)
 
@@ -378,8 +426,15 @@ class PointNet(nn.Module):
         x = self.relu(self.bn2(self.conv2(x)))
         x = self.relu(self.bn3(self.conv3(x)))
         x = self.maxpool(x).view(-1, 1024)  # Flatten to (B, 1024)
-
-        return x, matrix3x3, matrix64x64
+        
+        features = x  # Store features before projection
+        
+        # Only compute projection if needed (during training)
+        projection = None
+        if compute_projection:
+            projection = self.projection(x)  # Get projection for contrastive loss
+        
+        return projection, features, matrix3x3, matrix64x64
 
 
 
@@ -388,7 +443,8 @@ if __name__ == "__main__":
     training_transform = transforms.Compose([
         PointSampler(1024),
         Normalize(),
-        RandRotation_z(),
+        RandomRotation(),  # Full rotation instead of just z-axis
+        RandomJitter(scale=0.02, clip=0.05),  # Stronger jitter
         RandomNoise(),
     ])
 
@@ -401,7 +457,7 @@ if __name__ == "__main__":
     train_dataset = PointCloudDataset(DATA_DIR, CSV_PATH, train=True, transform=training_transform)
     test_dataset = PointCloudDataset(DATA_DIR, CSV_PATH, train=False, transform=test_transform)
     
-    BATCH_SIZE = 128
+    BATCH_SIZE = 64
     NUM_WORKERS = 16
     CHECKPOINT_PATH = 'checkpoint.pth'
     
@@ -423,15 +479,30 @@ if __name__ == "__main__":
 
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Test dataset size: {len(test_dataset)}")
+    
     model = PointNet().to(device)
     criterion = NTXentLoss().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+    weight_decay = 1e-5
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=weight_decay)
+    
+    # Use one-cycle learning rate scheduler for better convergence
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer, 
+        max_lr=0.001,
+        steps_per_epoch=len(train_loader),
+        epochs=100,
+        pct_start=0.1
+    )
 
     # Initialize tracking variables
     start_epoch = 0
     best_test_loss = float('inf')
     train_losses = []
     test_losses = []
+    
+    # Early stopping parameters
+    patience = 10
+    early_stop_counter = 0
     
     # Load checkpoint if exists
     if os.path.exists(CHECKPOINT_PATH):
@@ -443,6 +514,9 @@ if __name__ == "__main__":
         best_test_loss = checkpoint['best_test_loss']
         train_losses = checkpoint['train_losses']
         test_losses = checkpoint['test_losses']
+        # If the scheduler state is in the checkpoint, load it
+        if 'scheduler_state_dict' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         print(f"Resuming from epoch {start_epoch}")
 
     print("\nStarting training...")
@@ -453,8 +527,13 @@ if __name__ == "__main__":
     print(f"Workers: {NUM_WORKERS}")
     print(f"Device: {device}")
     print(f"Model: {model.__class__.__name__}")
+    print(f"Weight decay: {weight_decay}")
+    print(f"Early stopping patience: {patience}")
     
     try:
+        # Add mixed precision training
+        scaler = torch.amp.GradScaler('cuda')
+
         for epoch in range(start_epoch, 100):
             epoch_start_time = time.time()
             model.train()
@@ -463,20 +542,20 @@ if __name__ == "__main__":
             
             # Training loop
             pbar = tqdm(train_loader, desc=f'Epoch {epoch}')
-            for anchor, positive, negative in pbar:
+            for idx, (anchor, positive, negatives, labels) in enumerate(pbar):
                 anchor = anchor.to(device)
                 positive = positive.to(device)
-                negative = negative.to(device)
+                negatives = [neg.to(device) for neg in negatives]
                 
-                optimizer.zero_grad()
-                
-                z_a, _, _ = model(anchor)
-                z_p, _, _ = model(positive)
-                z_n, _, _ = model(negative)
-                
-                loss = criterion(z_a, z_p, z_n)
-                loss.backward()
-                optimizer.step()
+                with torch.amp.autocast('cuda'):
+                    z_a, _, _, _ = model(anchor)
+                    z_p, _, _, _ = model(positive)
+                    z_n, _, _, _ = model(negatives[0])
+                    loss = criterion(z_a, z_p, z_n)
+
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
                 
                 epoch_loss += loss.item()
                 num_batches += 1
@@ -485,54 +564,75 @@ if __name__ == "__main__":
             avg_train_loss = epoch_loss / num_batches
             train_losses.append(avg_train_loss)
             
-            # Validation and visualization every 5 epochs
+            # Evaluation every epoch for better monitoring
+            model.eval()
+            test_loss = 0
+            num_test_batches = 0
+            
+            with torch.no_grad():
+                for test_anchor, test_pos, test_negs, test_labels in test_loader:
+                    test_anchor = test_anchor.to(device)
+                    test_pos = test_pos.to(device)
+                    test_negs = [neg.to(device) for neg in test_negs]
+                    
+                    # During evaluation, we need the projection for computing loss
+                    z_a, _, _, _ = model(test_anchor)
+                    z_p, _, _, _ = model(test_pos)
+                    z_n, _, _, _ = model(test_negs[0])
+                    
+                    loss = criterion(z_a, z_p, z_n)
+                    test_loss += loss.item()
+                    num_test_batches += 1
+            
+            avg_test_loss = test_loss / num_test_batches
+            test_losses.append(avg_test_loss)
+            
+            # Update the learning rate based on validation loss
+            scheduler.step(avg_test_loss)
+            current_lr = optimizer.param_groups[0]['lr']
+            
+            # Visualization every 10 epochs
             if epoch % 10 == 0:
-                model.eval()
-                test_loss = 0
-                num_test_batches = 0
-                
-                with torch.no_grad():
-                    for test_anchor, test_pos, test_neg in test_loader:
-                        test_anchor = test_anchor.to(device)
-                        test_pos = test_pos.to(device)
-                        test_neg = test_neg.to(device)
-                        
-                        z_a, _, _ = model(test_anchor)
-                        z_p, _, _ = model(test_pos)
-                        z_n, _, _ = model(test_neg)
-                        
-                        loss = criterion(z_a, z_p, z_n)
-                        test_loss += loss.item()
-                        num_test_batches += 1
-                
-                avg_test_loss = test_loss / num_test_batches
-                test_losses.append(avg_test_loss)
-                
                 # Generate visualization
-                visualize_embeddings(model, test_loader, device, 
-                                  output_path=f'embeddings_epoch_{epoch}.png')
+                visualize_embeddings(
+                    model, 
+                    test_loader, 
+                    device, 
+                    output_path=f'embeddings_epoch_{epoch}.png'
+                )
+            
+            # Early stopping check
+            if avg_test_loss < best_test_loss:
+                best_test_loss = avg_test_loss
+                early_stop_counter = 0
                 
                 # Save best model
-                if avg_test_loss < best_test_loss:
-                    best_test_loss = avg_test_loss
-                    torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'train_loss': avg_train_loss,
-                        'test_loss': avg_test_loss,
-                        'best_test_loss': best_test_loss,
-                        'train_losses': train_losses,
-                        'test_losses': test_losses,
-                    }, 'best_model.pth')
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'train_loss': avg_train_loss,
+                    'test_loss': avg_test_loss,
+                    'best_test_loss': best_test_loss,
+                    'train_losses': train_losses,
+                    'test_losses': test_losses,
+                }, 'best_model.pth')
+                print(f"✓ New best model saved (test loss: {best_test_loss:.4f})")
+            else:
+                early_stop_counter += 1
+                if early_stop_counter >= patience:
+                    print(f"Early stopping triggered after {patience} epochs without improvement")
+                    break
             
             # Save checkpoint every epoch
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
                 'train_loss': avg_train_loss,
-                'test_loss': avg_test_loss if epoch % 5 == 0 else test_losses[-1] if test_losses else float('inf'),
+                'test_loss': avg_test_loss,
                 'best_test_loss': best_test_loss,
                 'train_losses': train_losses,
                 'test_losses': test_losses,
@@ -540,8 +640,9 @@ if __name__ == "__main__":
             
             epoch_time = time.time() - epoch_start_time
             print(f"Epoch {epoch}: Train Loss = {avg_train_loss:.4f}, "
-                  f"Test Loss = {avg_test_loss if epoch % 5 == 0 else test_losses[-1] if test_losses else float('inf'):.4f} "
-                  f"(best: {best_test_loss:.4f}), Time: {epoch_time:.1f}s")
+                  f"Test Loss = {avg_test_loss:.4f} "
+                  f"(best: {best_test_loss:.4f}), LR: {current_lr:.2e}, "
+                  f"ES counter: {early_stop_counter}/{patience}, Time: {epoch_time:.1f}s")
             
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
@@ -554,11 +655,25 @@ if __name__ == "__main__":
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
                 'train_losses': train_losses,
                 'test_losses': test_losses,
                 'best_test_loss': best_test_loss,
             }, CHECKPOINT_PATH)
             print("Final model saved")
+            
+            # Plot the learning curves
+            plt.figure(figsize=(10, 6))
+            plt.plot(train_losses, label='Training Loss')
+            plt.plot(test_losses, label='Test Loss')
+            plt.axhline(y=best_test_loss, color='r', linestyle='--', label=f'Best Test Loss ({best_test_loss:.4f})')
+            plt.title('Training and Test Loss')
+            plt.xlabel('Epochs')
+            plt.ylabel('Loss')
+            plt.legend()
+            plt.grid(True)
+            plt.savefig('loss_curves.png', dpi=300, bbox_inches='tight')
+            print("Loss curves saved to 'loss_curves.png'")
         except Exception as e:
             print(f"Error saving final model: {str(e)}")
 
