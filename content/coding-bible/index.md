@@ -73,7 +73,7 @@ In cases of multiple requests to a service, delays might actually help with load
 
 ## 16. Less assumptions, more debugging
 
-Make fewer assumptions in your code, as it leads to fewer errors and simplifies debugging.
+Don't assume what's wrong. Debug it.
 
 ## 17. No one really likes `yamls`
 
