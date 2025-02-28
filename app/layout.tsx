@@ -3,6 +3,7 @@ import { Inter } from "next/font/google"
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { Header } from "@/components/header"
+import { Analytics } from "@vercel/analytics/react"
 import 'katex/dist/katex.min.css'
 
 const inter = Inter({ subsets: ["latin"] })
@@ -29,6 +30,7 @@ export default function RootLayout({
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
           <Header />
           <main className="container mx-auto px-4 py-8">{children}</main>
+          <Analytics />
         </ThemeProvider>
       </body>
     </html>
