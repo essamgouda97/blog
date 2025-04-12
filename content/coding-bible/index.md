@@ -87,3 +87,16 @@ Start cleaning up iteratively, piece by piece, to avoid large-scale disruptions.
 
 You need to be able to navigate commits like a time traveler:  
 `git log --reverse --oneline <starting-commit-hash>..main`
+
+## 20. Understand allocated memory vs resident memory vs phantom memory
+
+Allocated memory is the memory that has been allocated by the program might be in RAM or disk (swap). Resident memory is the memory that is currently in RAM. Phantom memory is the memory that is not currently in RAM, but is still allocated by the program. [Nice article](https://pythonspeed.com/articles/measuring-memory-python/)
+
+## 21. Small changes > Big changes
+
+Small changes are easier to reason about, test, review and debug. Specifically in ML pipeline, ideally you only change a config file. [Nice read for ML pipelines](https://arxiv.org/pdf/2209.09125)
+
+
+## 22. Always return exit codes
+
+Your script should handle exit codes properly.
